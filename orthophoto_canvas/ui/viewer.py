@@ -1,19 +1,22 @@
 # agcloud/ui/viewer.py
 from __future__ import annotations
 from pathlib import Path
+
 from ..utils.tiles import TileStore
+from .sensors_layer import SensorLayer, add_sensors_by_gps_bulk
 
 import math
 from typing import Iterable, List, Optional, Tuple, Union
 
 from PyQt5.QtCore import Qt, QRectF, QPointF, QTimer
-from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
+from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QBrush
 from PyQt5.QtWidgets import (
     QGraphicsView,
     QGraphicsScene,
     QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsEllipseItem,
+    QToolTip
 )
 
 # ==== Tunables ====
@@ -47,7 +50,7 @@ class OrthophotoViewer(QGraphicsView):
         self.z_ranges       = self.ts.z_ranges
         self.is_tms         = self.ts.is_tms
 
-
+        
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
 
@@ -70,13 +73,12 @@ class OrthophotoViewer(QGraphicsView):
         self.current_zoom = self.ts.min_zoom
         self.placeholder_color = Qt.lightGray
         self.tile_items: dict[Tuple[int, int, int], QGraphicsPixmapItem | QGraphicsRectItem] = {}
-        self.sensor_items: List[QGraphicsEllipseItem] = []
-        self._sensors_mercator: List[Tuple[float, float, dict]] = []  # [(x,y,meta), ...]
 
         # Debounce loads after interaction
         self.update_timer = QTimer(self)
         self.update_timer.setSingleShot(True)
         self.update_timer.timeout.connect(self.update_tiles)
+        self.sensor_layer = SensorLayer(self)
 
         # Scene rect anchored to base zoom (min z)
         self._init_scene_rect_from_min_zoom()
@@ -100,82 +102,13 @@ class OrthophotoViewer(QGraphicsView):
         print(f"[BASE] z={z0} X:[{x_min}-{x_max}] Y:[{y_min}-{y_max}] scene={width}x{height}px")
 
     # ---------- Sensors overlay (optional) ----------
-    def set_sensors(self, sensors_mercator: Iterable[Tuple[float, float, dict]], radius_px: int = 5) -> None:
-        """
-        Provide sensors as iterable of (X_3857, Y_3857, meta_dict).
-        They will be reprojected to tile-indices on the fly and drawn as small circles.
-        """
-        self._sensors_mercator = list(sensors_mercator)
-        self._sensor_radius = max(1, int(radius_px))
-        self._rebuild_sensor_items()  # build once; position is updated when zoom/scroll changes
-
+    def set_sensors(self, sensors: list[dict]):
+        self.sensor_layer.clear()
+        add_sensors_by_gps_bulk(self.sensor_layer, sensors, z=self.max_zoom_fs, center_on_first=True)
+        
     def clear_sensors(self) -> None:
         """Remove all sensor markers from scene."""
-        for it in self.sensor_items:
-            self.scene.removeItem(it)
-        self.sensor_items.clear()
-        self._sensors_mercator.clear()
-
-    def _rebuild_sensor_items(self) -> None:
-        """(Re)create QGraphicsEllipseItem for each sensor (positions updated in _update_sensor_positions)."""
-        for it in self.sensor_items:
-            self.scene.removeItem(it)
-        self.sensor_items.clear()
-
-        # create items (position later)
-        for _ in self._sensors_mercator:
-            it = QGraphicsEllipseItem(0, 0, self._sensor_radius * 2, self._sensor_radius * 2)
-            it.setBrush(QColor(200, 40, 40))
-            it.setPen(QPen(Qt.NoPen))
-            it.setZValue(1000)  # above tiles
-            self.scene.addItem(it)
-            self.sensor_items.append(it)
-
-        self._update_sensor_positions()
-
-    def _update_sensor_positions(self) -> None:
-        """
-        Convert 3857 coords → scene pixels via z_base anchoring.
-        We need an affine mapping from mercator meters to tile indices at min z.
-        For simplicity, we derive it from the tile grid at min z.
-        """
-        if not self._sensors_mercator:
-            return
-
-        z0 = self.ts.min_zoom
-        x_min, x_max, y_min, y_max = self.ts.ranges(z0)
-
-        # Take two reference tiles to estimate mercator extent spanned by [x_min..x_max],[y_min..y_max]
-        # Tile bounds in mercator for XYZ at (z0, x, y):
-        def xyz_tile_bounds_merc(z: int, x: int, y: int) -> Tuple[float, float, float, float]:
-            # WebMercator meters
-            TILE_WORLD_SIZE = 2 * math.pi * 6378137.0
-            n = 1 << z
-            tile_span_m = TILE_WORLD_SIZE / n
-            # origin x=-half, y=+half (top), y grows down in tiles; real mercator Y grows up, so flip
-            x0 = -TILE_WORLD_SIZE / 2 + x * tile_span_m
-            y0_top = +TILE_WORLD_SIZE / 2 - y * tile_span_m
-            return (x0, y0_top - tile_span_m, x0 + tile_span_m, y0_top)
-
-        # overall mercator bbox at min z (rough, sufficient for placing points)
-        x0_w, y0_s, x0_e, y0_n = xyz_tile_bounds_merc(z0, x_min, y_min)
-        x1_w, y1_s, x1_e, y1_n = xyz_tile_bounds_merc(z0, x_max + 1, y_max + 1)
-        merc_left, merc_right = x0_w, x1_e
-        merc_top, merc_bottom = y0_n, y1_s  # note: top > bottom in merc meters
-
-        width_scene = (x_max - x_min + 1) * TILE_SIZE
-        height_scene = (y_max - y_min + 1) * TILE_SIZE
-
-        def to_scene(x_m: float, y_m: float) -> Tuple[float, float]:
-            # map mercator to scene rect anchored at min z
-            sx = (x_m - merc_left) / (merc_right - merc_left) * width_scene
-            sy = (merc_top - y_m) / (merc_top - merc_bottom) * height_scene
-            return sx, sy
-
-        for (idx, (mx, my, _meta)) in enumerate(self._sensors_mercator):
-            sx, sy = to_scene(mx, my)
-            it = self.sensor_items[idx]
-            it.setPos(sx - self._sensor_radius, sy - self._sensor_radius)
+        self.sensor_layer.clear()
 
     # ---------- Interaction ----------
     def wheelEvent(self, event) -> None:
@@ -249,9 +182,6 @@ class OrthophotoViewer(QGraphicsView):
         Core: compute visible keys (z,x,y) and ensure each has an item.
         Placeholders are created first; then upgraded to true pixmaps (with parent fallback).
         """
-        # update sensor overlay position (cheap)
-        self._update_sensor_positions()
-
         z = self._calc_zoom_level()
         self.current_zoom = z
 
@@ -291,6 +221,9 @@ class OrthophotoViewer(QGraphicsView):
         for key in list(self.tile_items.keys()):
             if key not in want:
                 self.scene.removeItem(self.tile_items.pop(key))
+
+        # Update sensor item positions
+        #self.sensor_layer._update_sensor_items_positions()
 
     # ---------- Tile placement / upgrade ----------
     def _create_placeholder_item_at(self, key: Tuple[int, int, int], eff_tile_scene: float):
