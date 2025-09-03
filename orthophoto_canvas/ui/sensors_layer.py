@@ -130,28 +130,9 @@ class SensorLayer:
         dot.setBrush(QBrush(spec.color))
         dot.setPen(QPen(Qt.NoPen))
         dot.setPos(QPointF(sx, sy))
-        #commented
-        #dot.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
         dot.setZValue(1_000_000)
 
-        #commented
-        # label_item = None
-        # if spec.label:
-        #     label_item = QGraphicsSimpleTextItem(spec.label)
-        #     label_item.setBrush(QBrush(QColor(30, 30, 30)))
-        #     label_item.setPos(QPointF(sx + r + 4, sy - r - 4))
-        #     label_item.setZValue(1_000_001)
-        #     label_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, False)
-        #     view_scale = self.viewer.transform().m11() 
-        #     base_font_size = 12
-        #     font_size = max(8, int(base_font_size / view_scale))
-        #     font = QFont("Segoe UI", font_size)
-        #     label_item.setFont(font)
-        #     self.viewer.scene.addItem(label_item)
-
         self.viewer.scene.addItem(dot)
-        # commented
-        #self._items[spec.sensor_id] = (dot, label_item, spec)
         self._items[spec.sensor_id] = (dot, None, spec)
         self._apply_visibility_for_current_zoom(spec.sensor_id)
 
@@ -176,9 +157,6 @@ class SensorLayer:
 
     def _on_sensor_hover_enter(self, dot_item: QGraphicsEllipseItem, spec: SensorSpec):
         html = self._format_popup_html(spec)
-        # commented
-        #self._popup.show_for(spec.sensor_id, html, dot_item.scenePos(), accent=spec.color)
-        # added
         view = self.viewer
         gp = view.mapToGlobal(view.mapFromScene(dot_item.scenePos()))
         QToolTip.showText(gp, html)
@@ -192,7 +170,6 @@ class SensorLayer:
         v = self.viewer
         if spec.xb is not None and spec.yb is not None:
             return (spec.xb - v.ts.z_ranges[v.min_zoom_fs][0]) * TILE_SIZE, (spec.yb - v.ts.z_ranges[v.min_zoom_fs][2]) * TILE_SIZE
-        # added
         if spec.z is not None and spec.x is not None and spec.y is not None:
             eff_scene = TILE_SIZE / float(1 << (spec.z - v.min_zoom_fs))
             sx, sy, _ = v._tile_scene_pos(spec.z, spec.x, spec.y, eff_scene)
@@ -318,18 +295,13 @@ def _latlon_to_base_xy_if_inside(viewer, lat: float, lon: float, z: int = None) 
     # Web mercator math
     lat_rad = math.radians(lat)
     xtile_f = (lon + 180.0) / 360.0 * n
-    # commented
-    #ytile_f_xyz = (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0 * n
-    # added
     ytile_f_xyz = (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0 * n
     ytile_f_disk = _y_xyz_to_disk(viewer, z, ytile_f_xyz)
 
     scale = 1 << (z - viewer.min_zoom_fs)
     xb = xtile_f      / float(scale)
-    #yb = ytile_f_xyz  / float(scale)
     yb = ytile_f_disk / float(scale)
 
-    # ????
     x_min_base = viewer.ts.z_ranges[viewer.min_zoom_fs][0]
     x_max_base = viewer.ts.z_ranges[viewer.min_zoom_fs][1]
     y_min_base = viewer.ts.z_ranges[viewer.min_zoom_fs][2]
@@ -389,14 +361,11 @@ def dataset_bbox_latlon(viewer, z: int = None) -> Tuple[float, float, float, flo
         raise ValueError(f"Zoom z={z} not available.")
     x_min, x_max, y_min_disk, y_max_disk = viewer.z_ranges[z]
     n = 1 << z
-    # added
     y_xyz_min, y_xyz_max = _y_disk_bounds_to_xyz_bounds(viewer, z, y_min_disk, y_max_disk)
     def tile2lon(x): return x / n * 360.0 - 180.0
     def tile2lat(y):
         t = math.pi * (1.0 - 2.0 * (y / n)); return math.degrees(math.atan(math.sinh(t)))
     lon_min = tile2lon(x_min); lon_max = tile2lon(x_max + 1)
-    # commented
-    # lat_max = tile2lat(y_min_disk); lat_min = tile2lat(y_max_disk + 1)
     lat_max = tile2lat(y_xyz_min); lat_min = tile2lat(y_xyz_max + 1)
     print(f"[COVERAGE z={z}] lon:[{lon_min:.6f}..{lon_max:.6f}]  lat:[{lat_min:.6f}..{lat_max:.6f}]")
     return (lat_min, lat_max, lon_min, lon_max)

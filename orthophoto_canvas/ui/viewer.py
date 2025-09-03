@@ -81,7 +81,6 @@ class OrthophotoViewer(QGraphicsView):
         self.update_timer.timeout.connect(self.update_tiles)
         self.sensor_layer = SensorLayer(self)
 
-        # added
         dataset_bbox_latlon(self, z=self.max_zoom_fs)
         add_sensors_by_gps_bulk(self.sensor_layer, get_sensors(), z=self.max_zoom_fs, default_radius_px=0.01)
 
@@ -226,9 +225,6 @@ class OrthophotoViewer(QGraphicsView):
         for key in list(self.tile_items.keys()):
             if key not in want:
                 self.scene.removeItem(self.tile_items.pop(key))
-
-        # Update sensor item positions
-        #self.sensor_layer._update_sensor_items_positions()
 
     # ---------- Tile placement / upgrade ----------
     def _create_placeholder_item_at(self, key: Tuple[int, int, int], eff_tile_scene: float):
