@@ -3,9 +3,9 @@ from typing import Optional, Tuple, Dict, Any, List, TYPE_CHECKING
 import math
 from PyQt5.QtWidgets import (
     QGraphicsEllipseItem, QGraphicsSimpleTextItem, QGraphicsItem,
-    QGraphicsPathItem, QGraphicsTextItem
+    QGraphicsPathItem, QGraphicsTextItem, QToolTip
 )
-from PyQt5.QtGui import QBrush, QPen, QColor, QPainterPath, QLinearGradient
+from PyQt5.QtGui import QBrush, QPen, QColor, QPainterPath, QLinearGradient, QFont
 from PyQt5.QtCore import Qt, QPointF
 
 TILE_SIZE = 512
@@ -39,14 +39,17 @@ class _HoverPopup:
         self._bg = QGraphicsPathItem()
         self._bg.setZValue(1_000_000_000)
         self._bg.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        
         self._radius = 10.0
         self._pad_w, self._pad_h = 18, 16
         self._border_pen = QPen(QColor(0, 0, 0, 40), 1)
+        
         self._text = QGraphicsTextItem(self._bg)
         self._text.setDefaultTextColor(QColor(24, 24, 24))
         self._text.setZValue(1_000_000_001)
         self._text.setPos(14, 12)
         self._text.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        
         scene.addItem(self._bg)
         self._bg.setVisible(False)
         self._for_sensor_id = None
@@ -56,6 +59,7 @@ class _HoverPopup:
         path.addRoundedRect(0, 0, w, h, self._radius, self._radius)
         path.moveTo(26.0, h); path.lineTo(34.0, h + 10.0); path.lineTo(42.0, h); path.closeSubpath()
         self._bg.setPath(path)
+
         grad = QLinearGradient(0, 0, 0, h)
         grad.setColorAt(0.0, QColor(255, 255, 255, 250))
         grad.setColorAt(1.0, QColor(245, 247, 250, 240))
@@ -69,6 +73,7 @@ class _HoverPopup:
         w = max(br.width() + self._pad_w + 16, 320.0)
         h = max(br.height() + self._pad_h + 20, 140.0)
         self._update_bg_path(w, h, accent or QColor(0, 120, 255))
+        
         sr = self._bg.scene().sceneRect()
         desired_x = anchor_scene_pos.x() + 16
         desired_y = anchor_scene_pos.y() - (h + 18)
@@ -117,6 +122,7 @@ class SensorLayer:
     def add_sensor(self, spec: SensorSpec):
         if spec.sensor_id in self._items:
             self.remove_sensor(spec.sensor_id)
+
         sx, sy = self._sensor_scene_pos(spec)
         print(f"add_sensor: sensor_id={spec.sensor_id}, radius_px={spec.radius_px}, sx={sx}, sy={sy}")
         r = float(spec.radius_px)
@@ -124,19 +130,29 @@ class SensorLayer:
         dot.setBrush(QBrush(spec.color))
         dot.setPen(QPen(Qt.NoPen))
         dot.setPos(QPointF(sx, sy))
-        dot.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        #commented
+        #dot.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
         dot.setZValue(1_000_000)
-        label_item = None
-        if spec.label:
-            label_item = QGraphicsSimpleTextItem(spec.label)
-            label_item.setBrush(QBrush(QColor(30, 30, 30)))
-            label_item.setPos(QPointF(sx + r + 4, sy - r - 4))
-            label_item.setZValue(1_000_001)
-            self.viewer.scene.addItem(label_item)
-            label_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, False)
+
+        #commented
+        # label_item = None
+        # if spec.label:
+        #     label_item = QGraphicsSimpleTextItem(spec.label)
+        #     label_item.setBrush(QBrush(QColor(30, 30, 30)))
+        #     label_item.setPos(QPointF(sx + r + 4, sy - r - 4))
+        #     label_item.setZValue(1_000_001)
+        #     label_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, False)
+        #     view_scale = self.viewer.transform().m11() 
+        #     base_font_size = 12
+        #     font_size = max(8, int(base_font_size / view_scale))
+        #     font = QFont("Segoe UI", font_size)
+        #     label_item.setFont(font)
+        #     self.viewer.scene.addItem(label_item)
 
         self.viewer.scene.addItem(dot)
-        self._items[spec.sensor_id] = (dot, label_item, spec)
+        # commented
+        #self._items[spec.sensor_id] = (dot, label_item, spec)
+        self._items[spec.sensor_id] = (dot, None, spec)
         self._apply_visibility_for_current_zoom(spec.sensor_id)
 
     def add_sensors(self, specs: List[SensorSpec]):
@@ -156,18 +172,33 @@ class SensorLayer:
         for sid in list(self._items.keys()):
             self.remove_sensor(sid)
 
+    # Hover popup
+
     def _on_sensor_hover_enter(self, dot_item: QGraphicsEllipseItem, spec: SensorSpec):
         html = self._format_popup_html(spec)
-        self._popup.show_for(spec.sensor_id, html, dot_item.scenePos(), accent=spec.color)
+        # commented
+        #self._popup.show_for(spec.sensor_id, html, dot_item.scenePos(), accent=spec.color)
+        # added
+        view = self.viewer
+        gp = view.mapToGlobal(view.mapFromScene(dot_item.scenePos()))
+        QToolTip.showText(gp, html)
 
     def _on_sensor_hover_leave(self, _dot_item: QGraphicsEllipseItem, spec: SensorSpec):
         self._popup.hide_if_for(spec.sensor_id)
 
+    # placement
+
     def _sensor_scene_pos(self, spec: SensorSpec) -> Tuple[float, float]:
         v = self.viewer
         if spec.xb is not None and spec.yb is not None:
-            return (spec.xb - v._x_min_base) * TILE_SIZE, (spec.yb - v._y_min_base) * TILE_SIZE
-        raise ValueError(f"SensorSpec {spec.sensor_id}: provide either (xb,yb)")
+            return (spec.xb - v.ts.z_ranges[v.min_zoom_fs][0]) * TILE_SIZE, (spec.yb - v.ts.z_ranges[v.min_zoom_fs][2]) * TILE_SIZE
+        # added
+        if spec.z is not None and spec.x is not None and spec.y is not None:
+            eff_scene = TILE_SIZE / float(1 << (spec.z - v.min_zoom_fs))
+            sx, sy, _ = v._tile_scene_pos(spec.z, spec.x, spec.y, eff_scene)
+            dx, dy = spec.offset_px
+            return sx + float(dx) * (eff_scene / TILE_SIZE), sy + float(dy) * (eff_scene / TILE_SIZE)
+        raise ValueError(f"SensorSpec {spec.sensor_id}: provide either (xb,yb) or (z,x,y[+offset_px])")
 
     def _on_view_update(self):
         for sid in list(self._items.keys()):
@@ -238,6 +269,10 @@ class SensorLayer:
         )
         return html
 
+# =========================
+# Helpers for GPS/bulk
+# =========================
+
 def _split_known_from_data(kwargs: dict):
     known = {k: v for k, v in kwargs.items() if k in KNOWN_SPEC_KEYS}
     data  = {k: v for k, v in kwargs.items() if k not in KNOWN_SPEC_KEYS}
@@ -247,6 +282,17 @@ def _first_key(d: dict, keys):
     for k in keys:
         if k in d: return d[k]
     return None
+
+def _y_xyz_to_disk(viewer, z: int, y_xyz: float) -> float:
+    return ((1 << z) - 1 - y_xyz) if getattr(viewer, "is_tms", False) else y_xyz
+
+def _y_disk_bounds_to_xyz_bounds(viewer, z: int, y_min_disk: int, y_max_disk: int) -> Tuple[int, int]:
+    if getattr(viewer, "is_tms", False):
+        n = 1 << z
+        y1 = n - 1 - y_max_disk
+        y2 = n - 1 - y_min_disk
+        return (min(y1, y2), max(y1, y2))
+    return (y_min_disk, y_max_disk)
 
 def _color_for_status(status: str) -> QColor:
     s = (status or "").strip().lower()
@@ -266,17 +312,31 @@ def _latlon_to_base_xy_if_inside(viewer, lat: float, lon: float, z: int = None) 
         return None
     if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
         return None
+    
     lat = max(min(lat, MERCATOR_MAX_LAT), -MERCATOR_MAX_LAT)
     n = 1 << z
     # Web mercator math
     lat_rad = math.radians(lat)
     xtile_f = (lon + 180.0) / 360.0 * n
+    # commented
+    #ytile_f_xyz = (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0 * n
+    # added
     ytile_f_xyz = (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0 * n
+    ytile_f_disk = _y_xyz_to_disk(viewer, z, ytile_f_xyz)
+
     scale = 1 << (z - viewer.min_zoom_fs)
     xb = xtile_f      / float(scale)
-    yb = ytile_f_xyz  / float(scale)
-    if viewer._x_min_base <= xb < viewer._x_min_base + viewer.ts.z_ranges[viewer.min_zoom_fs][1] + 1 and \
-       viewer._y_min_base <= yb < viewer._y_min_base + viewer.ts.z_ranges[viewer.min_zoom_fs][3] + 1:
+    #yb = ytile_f_xyz  / float(scale)
+    yb = ytile_f_disk / float(scale)
+
+    # ????
+    x_min_base = viewer.ts.z_ranges[viewer.min_zoom_fs][0]
+    x_max_base = viewer.ts.z_ranges[viewer.min_zoom_fs][1]
+    y_min_base = viewer.ts.z_ranges[viewer.min_zoom_fs][2]
+    y_max_base = viewer.ts.z_ranges[viewer.min_zoom_fs][3]
+
+    if x_min_base <= xb < x_min_base + x_max_base + 1 and \
+       y_min_base <= yb < y_min_base + y_max_base + 1:
         return xb, yb
     return None
 
@@ -297,7 +357,7 @@ def add_sensor_by_gps_strict(layer: SensorLayer, sensor_id: str, lat: float, lon
     return spec
 
 def add_sensors_by_gps_bulk(layer: SensorLayer, sensors: list, z: int = None,
-                            center_on_first: bool = False, default_radius_px: float = 8.0) -> Dict[str, list]:
+                            center_on_first: bool = False, default_radius_px: float = 0.1) -> Dict[str, list]:
     placed, skipped = [], []
     first_spec: Optional[SensorSpec] = None
     for s in sensors:
@@ -318,7 +378,7 @@ def add_sensors_by_gps_bulk(layer: SensorLayer, sensors: list, z: int = None,
             skipped.append(sid)
     if center_on_first and first_spec:
         v = layer.viewer
-        layer.viewer.centerOn((first_spec.xb - v._x_min_base) * TILE_SIZE, (first_spec.yb - v._y_min_base) * TILE_SIZE)
+        layer.viewer.centerOn((first_spec.xb - v.ts.z_ranges[v.min_zoom_fs][0]) * TILE_SIZE, (first_spec.yb - v.ts.z_ranges[v.min_zoom_fs][2]) * TILE_SIZE)
     print(f"[BULK] placed={len(placed)} skipped={len(skipped)}")
     return {"placed": placed, "skipped": skipped}
 
@@ -329,10 +389,14 @@ def dataset_bbox_latlon(viewer, z: int = None) -> Tuple[float, float, float, flo
         raise ValueError(f"Zoom z={z} not available.")
     x_min, x_max, y_min_disk, y_max_disk = viewer.z_ranges[z]
     n = 1 << z
+    # added
+    y_xyz_min, y_xyz_max = _y_disk_bounds_to_xyz_bounds(viewer, z, y_min_disk, y_max_disk)
     def tile2lon(x): return x / n * 360.0 - 180.0
     def tile2lat(y):
         t = math.pi * (1.0 - 2.0 * (y / n)); return math.degrees(math.atan(math.sinh(t)))
     lon_min = tile2lon(x_min); lon_max = tile2lon(x_max + 1)
-    lat_max = tile2lat(y_min_disk); lat_min = tile2lat(y_max_disk + 1)
+    # commented
+    # lat_max = tile2lat(y_min_disk); lat_min = tile2lat(y_max_disk + 1)
+    lat_max = tile2lat(y_xyz_min); lat_min = tile2lat(y_xyz_max + 1)
     print(f"[COVERAGE z={z}] lon:[{lon_min:.6f}..{lon_max:.6f}]  lat:[{lat_min:.6f}..{lat_max:.6f}]")
     return (lat_min, lat_max, lon_min, lon_max)

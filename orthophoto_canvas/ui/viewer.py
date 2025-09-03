@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..utils.tiles import TileStore
-from .sensors_layer import SensorLayer, add_sensors_by_gps_bulk
+from .sensors_layer import SensorLayer, add_sensors_by_gps_bulk, dataset_bbox_latlon
+from ..ag_io.sensors_api import get_sensors
 
 import math
 from typing import Iterable, List, Optional, Tuple, Union
@@ -66,7 +67,7 @@ class OrthophotoViewer(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
         self.setBackgroundBrush(QColor(220, 220, 220))
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # אופציונלי
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         # State
@@ -79,6 +80,10 @@ class OrthophotoViewer(QGraphicsView):
         self.update_timer.setSingleShot(True)
         self.update_timer.timeout.connect(self.update_tiles)
         self.sensor_layer = SensorLayer(self)
+
+        # added
+        dataset_bbox_latlon(self, z=self.max_zoom_fs)
+        add_sensors_by_gps_bulk(self.sensor_layer, get_sensors(), z=self.max_zoom_fs, default_radius_px=0.01)
 
         # Scene rect anchored to base zoom (min z)
         self._init_scene_rect_from_min_zoom()
