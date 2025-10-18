@@ -1,211 +1,269 @@
-# Orthophoto Canvas (PyQt)
+# VAST Dashboard (PyQt6 + Grafana + Orthophoto + Sensors Gateway)
 
-A lightweight orthophoto viewer built with PyQt5 and `QGraphicsView`.
-It reads a standard tile pyramid (folders `z/x/y.png`) in XYZ or TMS layout, lazily loads only what’s visible, and snaps to “native” scales to keep imagery crisp (no blur).
+A desktop monitoring dashboard built with **PyQt6**. It combines three data layers on a single Home screen:
 
-## Features
+- **Grafana embeds (demo):** two Grafana panels rendered via QWebEngine (Prometheus demo data; not related to the map sensors).
+- **Orthophoto map:** a fast tiled orthophoto viewer (QGraphicsView/QGraphicsScene) with smooth zoom & pan.
+- **Live sensor overlay (real):** a DSL → SQL gateway backed by a gRPC runner querying a SQLite database and returning sensor rows that are plotted on the map.
 
-* **Lazy tile loading**: loads only the tiles that enter the viewport.
-* **LOD (level-of-detail)**: picks the logical zoom `z` based on tile size on screen.
-* **XYZ/TMS auto-detection**: flips Y when needed.
-* **Snap to native scale**: avoids smoothing/resampling blur.
-* **Smooth navigation**: wheel zoom, drag to pan, handy hotkeys.
-* **Smart initial focus**: centers on real data and fits width (tunable).
+## Components
 
----
+- `src/vast/auth_ui/` – Login/Signup pages and a small in-memory auth service (app starts on Login; successful sign-in opens the main window; Logout returns to Login).
+- `src/vast/orthophoto_canvas/` – Tiled viewer (`ui/viewer.py`), sensor overlay (`ui/sensors_layer.py`), data access (`ag_io/sensors_api.py`).
+- `src/vast/dsl/` – A compact query DSL (JSON plan).
+- `src/vast/runner/` – gRPC server executing SQL against SQLite (`data/app.db`).
+- `src/vast/gateway/` – FastAPI app exposing `/runQuery`; translates DSL to SQL, calls the runner, and returns JSON.
+- `src/vast/services/` – Flask utilities (Prometheus demo exporter, optional simple web map).
+- `grafana/`, `prometheus/` – Dockerized Grafana/Prometheus for the demo panels.
+- `src/vast/main.py`, `src/vast/main_window.py`, `src/vast/home_view.py` – Desktop shell (menu, navigation, and Home layout: Grafana on top, orthophoto below).
 
 ## Requirements
 
-* Windows / macOS / Linux
-* Python 3.10–3.12
-* Packages: `PyQt5` (and optionally `Pillow` if you extend I/O)
+Install everything from the single unified requirements file at the repository root:
 
-Use a virtual environment for a clean install.
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip wheel
+```
+
+```bash
+pip install -r requirements.txt
+```
+
+> Desktop GUI deps (PyQt6 / WebEngine) are installed on **Windows and macOS** only (via environment markers):
+>
+> ```text
+> PyQt6==6.9.1 ; platform_system == "Windows" or platform_system == "Darwin"
+> PyQt6-WebEngine==6.9.0 ; platform_system == "Windows" or platform_system == "Darwin"
+> ```
+> Linux containers stay slim and avoid Qt/WebEngine system dependencies. If you develop the desktop app on Linux,
+> install these two packages explicitly on your host: `pip install PyQt6 PyQt6-WebEngine`.
 
 ---
 
-## Quick Start
+## Run with Docker (recommended)
 
-From `orthophoto_canvas` folder:
+Make sure build context is the **repo root** and Dockerfiles are referenced under `src/vast/...` in `docker-compose.yml`.
 
-```powershell
-# create & activate venv (Windows PowerShell)
-python -m venv .venv
-.\.venv\Scripts\activate
+```yaml
+services:
+  runner:
+    build:
+      context: .
+      dockerfile: src/vast/runner/Dockerfile
+    environment:
+      - RUNNER_MODE=real
+      - SQLITE_DB=/data/app.db
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./data:/data        # RW mount for SQLite
+    ports:
+      - "50051:50051"
 
-# install dependencies
-python -m pip install --upgrade pip
-pip install PyQt5
+  gateway:
+    build:
+      context: .
+      dockerfile: src/vast/gateway/Dockerfile
+    environment:
+      - RUNNER_ADDR=runner:50051
+    ports:
+      - "9001:9001"
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_DEFAULT_THEME=light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
 ```
 
-> **Important:** Always run with the same Python interpreter as your venv.
-> If you see a “Qt platform plugin ‘windows’” error, it usually means you launched with a different Python than the one that has PyQt5 installed.
+Build and run:
+
+```bash
+docker compose build runner gateway
+docker compose up -d runner gateway prometheus grafana
+docker compose ps
+```
+
+Check services:
+- Gateway API: `http://localhost:9001`
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3000`
 
 ---
 
-## Run
+## Run locally (without Docker)
 
-With your venv active, run:
+Create and activate a venv, then run the services and desktop app in separate terminals.
 
-```powershell
-python -m orthophoto_canvas --tiles .\data\tiles
+# Start Grafana/Prometheus (optional but recommended for the demo)
+```bash
+docker compose up -d prometheus grafana
+docker compose ps
 ```
 
-or provide an absolute path:
-
-```powershell
-python -m orthophoto_canvas --tiles C:\path\to\tiles
+### Terminal A – Runner (gRPC)
+```bash
+.\.venv\Scripts\Activate.ps1
+# Change the path according to the current location of the project
+$env:SQLITE_DB = "/C:/Users/sara/Documents/login-and-gui/data/app.db"
+python -m vast.runner.runner_server
 ```
 
-`--tiles` must point to the **root** folder that contains subfolders named by `z` (zoom levels), and under each `z` folders named by `x`, and inside each, images named `y.png`/`.jpg`.
+### Terminal B – Gateway (FastAPI)
+```bash
+python -m uvicorn vast.gateway.app:create_app --factory --host 127.0.0.1 --port 9001
+```
+
+### Terminal C – Demo metrics exporter (optional)
+```bash
+python -m vast.services.sensors_metrics_app
+```
+
+### Terminal D – Desktop app (PyQt6)
+**Windows (PowerShell):**
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:GATEWAY_URL = "http://127.0.0.1:9001"
+python .\src\vast\main.py
+```
+
+**macOS/Linux (bash):**
+```bash
+source .venv/bin/activate
+export GATEWAY_URL="http://127.0.0.1:9001"
+python ./src/vast/main.py
+```
+
+> Note (Linux/macOS): you may need to install system Qt dependencies for PyQt6 (including WebEngine).
 
 ---
 
-## Where do tiles come from?
+## Orthophoto Canvas (PyQt6)
 
-If you start with a GeoTIFF, create a web-mercator tile pyramid:
+A tiled orthophoto viewer built with QGraphicsView/QGraphicsScene. It loads only the tiles that enter the viewport, keeps imagery crisp by snapping to native scales, and provides smooth navigation.
 
-1. Reproject to **EPSG:3857** (if needed):
+### Features
+- Lazy tile loading (only tiles in view are fetched)
+- LOD (level-of-detail) with smart `z` selection
+- XYZ/TMS auto-detection (flips Y when needed)
+- Snap to native scale (crisp imagery, no blur)
+- Smooth navigation: wheel to zoom, drag to pan
+- Smart initial focus: fits to the real data extent
 
+### Quick start (desktop app)
+
+**Windows (PowerShell):**
 ```powershell
-gdalwarp -t_srs EPSG:3857 input.tif output_3857.tif
+.\.venv\Scripts\Activate.ps1
+$env:GATEWAY_URL = "http://127.0.0.1:9001"
+python .\src\vast\main.py
 ```
 
-2. Cut to tiles (example: 512×512, XYZ, zooms 10–18):
-
-```powershell
-python -m osgeo_utils.gdal2tiles --xyz -z 10-18 --tilesize 512 -r cubic `
-  output_3857.tif C:\path\to\tiles
+**macOS/Linux (bash):**
+```bash
+source .venv/bin/activate
+export GATEWAY_URL="http://127.0.0.1:9001"
+python ./src/vast/main.py
 ```
 
-Folder layout example:
+> Note (Linux/macOS): you may need to install system Qt dependencies for PyQt6 (including WebEngine).
 
-```
+### Tile data layout (XYZ/TMS)
+```text
 tiles/
-  10/
-    611/
-      391000.png
-      ...
-  ...
-  18/
-    156448/
-      250368.png
-      ...
+  {z}/
+    {x}/
+      {y}.png
 ```
 
-The viewer auto-detects XYZ vs TMS (Y-flip) — no manual switch required.
+### Hotkeys
+- **Wheel**: zoom in/out
+- **Drag**: pan
+- **Shift + Wheel**: slow, precise zoom
+- **F**: fit to data extent
+- **W**: fit width (data extent)
+- **G**: refocus to a known data tile
+
+
+## Environment variables
+
+- `RUNNER_MODE` (runner): `real` or simulation mode (if implemented).
+- `SQLITE_DB`   (runner): path to SQLite DB (default `/data/app.db`).
+- `LOG_LEVEL`   (both):   `INFO`, `DEBUG`, etc.
+- `RUNNER_ADDR` (gateway): gRPC target, e.g. `runner:50051`.
+- `GATEWAY_URL` (desktop): HTTP endpoint for the gateway, e.g. `http://127.0.0.1:9001`.
 
 ---
 
-## Keyboard & Navigation
+## Notes
 
-* **Mouse wheel**: zoom in/out around the cursor.
-* **Drag (left mouse)**: pan.
-* **1 … 5**: jump to preset tile sizes on screen (from far to near).
-* **C**: snap to nearest **native** scale (sharp, no blur).
-* **F**: fit the whole scene width (general).
-* **W**: fit **data** width (only the data extent, not empty scene space).
-* **G**: re-focus to a known data tile if you “lost” the imagery.
+- Keep Docker `build.context` at repo root so `requirements.txt`, `certs/`, `proto/` and source folders are visible to the build.
+- If SQLite errors occur inside containers, ensure `./data` is mounted **RW** (no `:ro`) so WAL/journal files can be created.
+- The `version:` key in `docker-compose.yml` is obsolete and can be removed.
 
-By default, on first show the viewer does `fit_to_data("width", 0.98)`.
-If you want to open **larger/closer**, add a scale multiplier afterward (see below).
+## Prerequisites
 
----
-
-## Control the initial zoom
-
-In `ui/viewer.py`, after the initial fit you can add a scale bump:
-
-```python
-from PyQt5.QtCore import QTimer
-
-# inside __init__ or showEvent, after indexing is ready:
-QTimer.singleShot(0, lambda: (self.fit_to_data("width", 0.98), self.scale(1.25, 1.25)))
-```
-
-* Increase `1.25` to open even closer.
-* Or reduce the margin (e.g. `0.92`) to use more of the window width.
+- **Windows + PowerShell**
+- **Python 3.12**
+- **pip** (latest), **wheel**
+- **Docker Desktop** (for Grafana/Prometheus demo)
+- **Git**
 
 ---
 
-## Project Layout
+## Setup
 
-```
-orthophoto_canvas/
-  __init__.py
-  __main__.py      # enables: python -m orthophoto_canvas
-  app.py           # CLI entry: parse args, create QApplication, show Viewer
-  ui/
-    __init__.py
-    viewer.py      # OrthophotoViewer: LOD, lazy loading, crisp placement, input
-  utils/
-    __init__.py
-    tiles.py       # TileStore: scan z/x/y, ranges, XYZ/TMS detection, file helpers
-  data/
-    tiles/         # example tiles (optional), or place your own path & pass --tiles
-  scripts/         # optional scripts (tiling, tests)
-  geo/             # optional GIS helpers (future)
-  ag_io/           # optional I/O modules (future)
-  README.md
-```
+```powershell
+# From the repository root
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 
-* **`app.py`**
-  Parses `--tiles`, builds `QApplication`, constructs `OrthophotoViewer` with the tiles path, and shows the window.
+python -m pip install --upgrade pip wheel
 
-* **`ui/viewer.py`**
-  The full viewer: indexing (scan zooms/ranges), scene anchoring, LOD decision, placeholder → pixmap upgrades, crisp placement/scaling, input handlers, hotkeys, initial fit.
+# Install all project deps (top-level + module-specific)
+pip install -r .\requirements.txt `
 
-* **`utils/tiles.py`**
-  `TileStore`: fast scanning of `z` folders, min/max `x,y` per `z`, robust XYZ/TMS pathing, and helpers for “first real tile” / nearest tiles.
+# Ensure binary wheels for these heavy packages (avoids build issues)
+pip install --only-binary=:all: PyQt6 PyQt6-WebEngine grpcio grpcio-tools
 
----
 
-## Troubleshooting
+## Running (4 terminals)
+#Start Grafana/Prometheus (optional but recommended for the demo
+docker compose up -d prometheus grafana
+docker compose ps
 
-**Error**
-`qt.qpa.plugin: Could not find the Qt platform plugin "windows" in ""`
+## Terminal A - Runner (gRPC → SQLite)
+.\.venv\Scripts\Activate.ps1
+$env:SQLITE_DB = "/C:/Users/sara/Documents/login-and-gui/data/app.db"
+python -m vast.runner.runner_server
 
-**Fix**
+## Terminal B – Gateway (FastAPI)
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn vast.gateway.app:create_app --factory --host 127.0.0.1 --port 9001
 
-* Make sure you’re running the venv’s Python:
+## Terminal C - Demo metrics exporter (Flask)
+.\.venv\Scripts\Activate.ps1
+python -m vast.services.sensors_metrics_app
 
-  ```powershell
-  .\.venv\Scripts\python.exe -m orthophoto_canvas --tiles .\data\tiles
-  ```
-* If still failing:
+## Terminal D - Desktop app (PyQt6)
+.\.venv\Scripts\Activate.ps1
+$env:GATEWAY_URL = "http://127.0.0.1:9001"
+python .\src\vast\main.py
 
-  ```powershell
-  pip uninstall -y PyQt5
-  pip install PyQt5
-  ```
-
-**Error**
-`AttributeError: 'OrthophotoViewer' object has no attribute 'x_min'`
-
-**Cause**
-A view/fit call happened before indexing finished (zoom ranges/anchors not set).
-
-**Fix**
-Ensure indexing runs first (the shipped code guards this). When adding custom init code, call your fits only after the scene bounds and zoom ranges are available (the default `showEvent` path with `QTimer.singleShot` already does that).
-
----
-
-## Optional Extensions
-
-* **Sensor overlay (CSV)**
-  Add a simple CSV (`lon,lat,label`) loader, transform to EPSG:3857, and draw small markers on the map. (You can wire a `--sensors` flag in `app.py` and pass to the viewer.)
-
-* **Pixmap cache**
-  For large datasets, consider caching QPixmaps to reduce disk hits.
-
----
-
-## License
-
-MIT (or your project’s license).
-
----
-
-## Credits
-
-Built as an internal viewer for AgCloud with a focus on simplicity, performance, and crisp rendering.
